@@ -13,9 +13,7 @@ struct Camera {
     float halfW = WINDOW_WIDTH / (2.0f * PIXELS_PER_METER);
     float halfH = WINDOW_HEIGHT / (2.0f * PIXELS_PER_METER);
 
-    void update(b2BodyId body, float deltaTime) {
-        const b2Vec2 targetPos = b2Body_GetPosition(body);
-
+    void update(b2Vec2 targetPos, float deltaTime) {
         constexpr float followSpeed = 5.0f; // meters per second, higher = faster camera movement
         const float t = 1.0f - std::exp(-followSpeed * deltaTime);
 
@@ -39,6 +37,10 @@ struct Player {
     float halfW = 0.5f;     // 1 m wide = 50 px
     float halfH = 0.5f;
     float speed = 5.0f;     // meters per second, not pixels
+    b2Vec2 prevPos{};       // position before the last physics step, for interpolation
+
+    // physics runs at 60 Hz, rendering faster: blend the last two steps so motion is smooth
+    b2Vec2 drawPos(float alpha) const { return b2Lerp(prevPos, b2Body_GetPosition(body), alpha); }
 
     void create(b2WorldId world, b2Vec2 startPos) {
         b2BodyDef bodyDef = b2DefaultBodyDef();
@@ -46,6 +48,7 @@ struct Player {
         bodyDef.position = startPos;
         bodyDef.fixedRotation = true;       // don't tip over
         body = b2CreateBody(world, &bodyDef);
+        prevPos = startPos;
 
         b2Polygon box = b2MakeBox(halfW, halfH);
         b2ShapeDef shapeDef = b2DefaultShapeDef();
@@ -68,9 +71,8 @@ struct Player {
         b2Body_SetLinearVelocity(body, vel);
     }
 
-    void render(SDL_Renderer* renderer, const Camera& camera) {
-        b2Vec2 position = b2Body_GetPosition(body);
-        SDL_FRect rect = toScreenRect(position, halfW, halfH, camera);
+    void render(SDL_Renderer* renderer, const Camera& camera, float alpha) {
+        SDL_FRect rect = toScreenRect(drawPos(alpha), halfW, halfH, camera);
         SDL_SetRenderDrawColor(renderer, 255, 140, 0, 255); // orange
         SDL_RenderFillRect(renderer, &rect);
     }
@@ -104,21 +106,24 @@ struct Box {
     float halfW = 0.5f;
     float halfH = 0.5f;
     b2BodyType type = b2_staticBody;
+    b2Vec2 prevPos{};
+
+    b2Vec2 drawPos(float alpha) const { return b2Lerp(prevPos, b2Body_GetPosition(body), alpha); }
 
     void create(b2WorldId world, b2Vec2 startPos, b2BodyType bodyType = b2_staticBody) {
         b2BodyDef bodyDef = b2DefaultBodyDef();
         bodyDef.position = startPos;
         bodyDef.type = type;
         body = b2CreateBody(world, &bodyDef);
+        prevPos = startPos;
 
         b2Polygon box = b2MakeBox(halfW, halfH);
         b2ShapeDef shapeDef = b2DefaultShapeDef();
         b2CreatePolygonShape(body, &shapeDef, &box);
     }
 
-    void render(SDL_Renderer* renderer, const Camera& camera) {
-        b2Vec2 position = b2Body_GetPosition(body);
-        SDL_FRect rect = toScreenRect(position, halfW, halfH, camera);
+    void render(SDL_Renderer* renderer, const Camera& camera, float alpha) {
+        SDL_FRect rect = toScreenRect(drawPos(alpha), halfW, halfH, camera);
         SDL_SetRenderDrawColor(renderer, 0, 200, 0, 255); // green
         SDL_RenderFillRect(renderer, &rect);
     }
@@ -138,6 +143,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     SDL_SetRenderVSync(renderer, true);
+    SDL_Log("Video driver: %s", SDL_GetCurrentVideoDriver());   // e.g. "cocoa"
+    SDL_Log("Renderer: %s", SDL_GetRendererName(renderer));
 
     b2WorldDef worldDef = b2DefaultWorldDef();;
     worldDef.gravity = b2Vec2{0.0f, 9.8f};
@@ -165,18 +172,23 @@ int main(int argc, char* argv[]) {
     int64_t lastTime = now;
     float deltaTime = 0.0;
     Camera camera;
+    camera.position = b2Body_GetPosition(player.body); // start on the player instead of panning from (0,0)
     while (running) {
         lastTime = now;
         now = SDL_GetTicksNS();
         deltaTime = (now - lastTime) / 1000000000.0; // convert nanoseconds to seconds
+        deltaTime = SDL_min(deltaTime, 0.1f); // first frame / window drag can stall; don't burst-step physics
 
         accumulator += deltaTime;
         while (accumulator >= TIME_STEP) {
+            player.prevPos = b2Body_GetPosition(player.body);
+            box1.prevPos = b2Body_GetPosition(box1.body);
             b2World_Step(world, TIME_STEP, 4);
             accumulator -= TIME_STEP;
         }
+        const float alpha = accumulator / TIME_STEP; // 0..1, how far we are into the next step
 
-        camera.update(player.body, deltaTime);
+        camera.update(player.drawPos(alpha), deltaTime);
 
         // 1. Handle input/events
         SDL_Event event;
@@ -192,13 +204,13 @@ int main(int argc, char* argv[]) {
 
         const bool* keys = SDL_GetKeyboardState(nullptr);
         player.update(keys);
-        player.render(renderer, camera);
+        player.render(renderer, camera, alpha);
 
         // draw ground
-        ground.render(renderer, camera);
+        ground.render(renderer, camera, alpha);
 
         // draw box1
-        box1.render(renderer, camera);
+        box1.render(renderer, camera, alpha);
 
         // 3. Show the frame
         SDL_RenderPresent(renderer);

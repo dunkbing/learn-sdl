@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
+
+# Must be set before project()
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
+  set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+endif()
 project(sdl3_learn LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
