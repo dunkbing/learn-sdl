@@ -1,0 +1,15 @@
+# CMake build output
+build/
+out/
+
+# vcpkg (manifest mode installs packages here when not using a build dir)
+vcpkg_installed/
+
+# Personal CMake preset overrides
+CMakeUserPresets.json
+
+# Editors / IDEs
+.vs/
+.vscode/
+.idea/
+*.user
