@@ -1,17 +1,34 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <box2d/box2d.h>
+#include <cmath>
 
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 
 constexpr float PIXELS_PER_METER = 50.0f;
 
+struct Camera {
+    b2Vec2 position{};
+    float halfW = WINDOW_WIDTH / (2.0f * PIXELS_PER_METER);
+    float halfH = WINDOW_HEIGHT / (2.0f * PIXELS_PER_METER);
+
+    void update(b2BodyId body, float deltaTime) {
+        const b2Vec2 targetPos = b2Body_GetPosition(body);
+
+        constexpr float followSpeed = 5.0f; // meters per second, higher = faster camera movement
+        const float t = 1.0f - std::exp(-followSpeed * deltaTime);
+
+        position.x += (targetPos.x - position.x) * t;
+        position.y += (targetPos.y - position.y) * t;
+    }
+};
+
 // Box2D gives you a center + half sizes (meters); SDL wants top-left + full size (pixels)
-SDL_FRect toScreenRect(const b2Vec2& center, float halfW, float halfH) {
+SDL_FRect toScreenRect(const b2Vec2& center, float halfW, float halfH, const Camera& camera) {
     return SDL_FRect{
-        (center.x - halfW) * PIXELS_PER_METER,
-        (center.y - halfH) * PIXELS_PER_METER,
+        (center.x - camera.position.x + camera.halfW - halfW) * PIXELS_PER_METER,
+        (center.y - camera.position.y + camera.halfH - halfH) * PIXELS_PER_METER,
         halfW * 2.0f * PIXELS_PER_METER,
         halfH * 2.0f * PIXELS_PER_METER
     };
@@ -32,7 +49,7 @@ struct Player {
 
         b2Polygon box = b2MakeBox(halfW, halfH);
         b2ShapeDef shapeDef = b2DefaultShapeDef();
-        shapeDef.density = 1.0f;            // gives the body mass
+        shapeDef.density = 5.0f;            // gives the body mass
         b2CreatePolygonShape(body, &shapeDef, &box);
     }
 
@@ -44,14 +61,41 @@ struct Player {
         } else if (keys[SDL_SCANCODE_RIGHT]) {
             vel.x = speed;
         }
+
+        if (keys[SDL_SCANCODE_SPACE]) {
+            vel.y = -speed * 1.5f; // jump up
+        }
         b2Body_SetLinearVelocity(body, vel);
     }
 
-    void render(SDL_Renderer* renderer) {
+    void render(SDL_Renderer* renderer, const Camera& camera) {
         b2Vec2 position = b2Body_GetPosition(body);
-        SDL_FRect rect = toScreenRect(position, halfW, halfH);
+        SDL_FRect rect = toScreenRect(position, halfW, halfH, camera);
         SDL_SetRenderDrawColor(renderer, 255, 140, 0, 255); // orange
         SDL_RenderFillRect(renderer, &rect);
+    }
+
+    bool grounded(b2BodyId ground) const {
+        const int capacity = 8;
+        b2ContactData contacts[capacity];
+        int count = b2Body_GetContactData(body, contacts, capacity);
+
+        for (int i = 0; i < count; i++) {
+            const b2Manifold& m = contacts[i].manifold;
+            if (m.pointCount == 0) continue;
+
+            float normalY = m.normal.y;
+            b2ShapeId other = B2_ID_EQUALS(b2Shape_GetBody(contacts[i].shapeIdA), body) ? contacts[i].shapeIdB : contacts[i].shapeIdA;
+
+            if (B2_ID_EQUALS(b2Shape_GetBody(other), ground)) {
+                normalY = -normalY;
+            }
+
+            if (normalY < -0.5f) {
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -72,9 +116,9 @@ struct Box {
         b2CreatePolygonShape(body, &shapeDef, &box);
     }
 
-    void render(SDL_Renderer* renderer) {
+    void render(SDL_Renderer* renderer, const Camera& camera) {
         b2Vec2 position = b2Body_GetPosition(body);
-        SDL_FRect rect = toScreenRect(position, halfW, halfH);
+        SDL_FRect rect = toScreenRect(position, halfW, halfH, camera);
         SDL_SetRenderDrawColor(renderer, 0, 200, 0, 255); // green
         SDL_RenderFillRect(renderer, &rect);
     }
@@ -120,6 +164,7 @@ int main(int argc, char* argv[]) {
     int64_t now = SDL_GetTicksNS();
     int64_t lastTime = now;
     float deltaTime = 0.0;
+    Camera camera;
     while (running) {
         lastTime = now;
         now = SDL_GetTicksNS();
@@ -130,6 +175,8 @@ int main(int argc, char* argv[]) {
             b2World_Step(world, TIME_STEP, 4);
             accumulator -= TIME_STEP;
         }
+
+        camera.update(player.body, deltaTime);
 
         // 1. Handle input/events
         SDL_Event event;
@@ -145,13 +192,13 @@ int main(int argc, char* argv[]) {
 
         const bool* keys = SDL_GetKeyboardState(nullptr);
         player.update(keys);
-        player.render(renderer);
+        player.render(renderer, camera);
 
         // draw ground
-        ground.render(renderer);
+        ground.render(renderer, camera);
 
         // draw box1
-        box1.render(renderer);
+        box1.render(renderer, camera);
 
         // 3. Show the frame
         SDL_RenderPresent(renderer);
