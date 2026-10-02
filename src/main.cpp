@@ -1,7 +1,10 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <SDL3_image/SDL_image.h>
 #include <box2d/box2d.h>
 #include <cmath>
+
+#include "player_png.h"
 
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
@@ -32,12 +35,27 @@ SDL_FRect toScreenRect(const b2Vec2& center, float halfW, float halfH, const Cam
     };
 }
 
+SDL_Texture* loadEmbeddedPlayerTexture(SDL_Renderer* renderer) {
+    SDL_IOStream* stream = SDL_IOFromConstMem(playerPng, playerPngSize);
+    if (!stream) {
+        SDL_Log("Couldn't open embedded player image: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    SDL_Texture* texture = IMG_LoadTexture_IO(renderer, stream, true);
+    if (!texture) {
+        SDL_Log("Couldn't decode embedded player image: %s", SDL_GetError());
+    }
+    return texture;
+}
+
 struct Player {
     b2BodyId body;
     float halfW = 0.5f;     // 1 m wide = 50 px
     float halfH = 0.5f;
     float speed = 5.0f;     // meters per second, not pixels
     b2Vec2 prevPos{};       // position before the last physics step, for interpolation
+    SDL_Texture* texture = nullptr;
 
     // physics runs at 60 Hz, rendering faster: blend the last two steps so motion is smooth
     b2Vec2 drawPos(float alpha) const { return b2Lerp(prevPos, b2Body_GetPosition(body), alpha); }
@@ -73,8 +91,7 @@ struct Player {
 
     void render(SDL_Renderer* renderer, const Camera& camera, float alpha) {
         SDL_FRect rect = toScreenRect(drawPos(alpha), halfW, halfH, camera);
-        SDL_SetRenderDrawColor(renderer, 255, 140, 0, 255); // orange
-        SDL_RenderFillRect(renderer, &rect);
+        SDL_RenderTexture(renderer, texture, nullptr, &rect);
     }
 
     bool grounded(b2BodyId ground) const {
@@ -163,6 +180,14 @@ int main(int argc, char* argv[]) {
 
     Player player;
     player.create(world, b2Vec2{8.0f, 2.0f});
+    player.texture = loadEmbeddedPlayerTexture(renderer);
+    if (!player.texture) {
+        b2DestroyWorld(world);
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
 
     constexpr float TIME_STEP = 1.0f / 60.0f;
     float accumulator = 0.0f;
@@ -217,6 +242,7 @@ int main(int argc, char* argv[]) {
     }
 
     b2DestroyWorld(world);
+    SDL_DestroyTexture(player.texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
